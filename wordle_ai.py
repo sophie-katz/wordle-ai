@@ -1,4 +1,4 @@
-from typing import List, Union, Optional, Dict, Set, Tuple, cast, Collection, Callable
+from typing import List, Union, Optional, Dict, Set, Tuple, cast, Collection, Callable, Any
 import random
 import json
 import abc
@@ -98,22 +98,32 @@ class WordSet(object):
         df["frequency"] = df["count"] / df["count"].max()
 
         return df
+    
+    @functools.cached_property
+    def words_in_letter_frequency_sum_order(self) -> pd.DataFrame:
+        # return pd.DataFrame([{"word": word, "frequency_sum": self.get_word_frequency_sum(word)} for word in self.words]) \
+        #     .sort_values("frequency_sum", ascending = False)
+        return sorted(self.words, key = functools.partial(WordSet.get_word_frequency_sum, self))
 
-    def get_words_by_letter_frequency_sum(self, mask: WordMask = WordMask()) -> pd.DataFrame:
+    def get_word_frequency_sum(self, word: str) -> float:
+        return cast(float, self.letter_frequency.loc[self.letter_frequency["letter"].isin(list(word))]["frequency"].sum())
+
+    def get_random_words(self, mask: WordMask = WordMask()) -> pd.DataFrame:
         data = []
 
         for word in self.words:
             if mask.matches(word):
-                frequency_sum = self.letter_frequency.loc[self.letter_frequency["letter"].isin(list(word))]["frequency"].sum()
-                data.append({"word": word, "frequency_sum": frequency_sum})
-
-        if len(data) == 0:
-            raise KeyError("no matching words")
-
-        df = pd.DataFrame(data) \
-            .sort_values("frequency_sum", ascending = False)
+                data.append({"word": word})
         
-        return df
+        random.shuffle(data)
+
+        return pd.DataFrame(data)
+    
+    def get_random_word(self, mask: WordMask = WordMask()) -> str:
+        return random.choice([word for word in self.words if mask.matches(word)])
+    
+    def get_max_letter_frequency_sum_word(self, mask: WordMask = WordMask()) -> str:
+        return cast(str, next(word for word in self.words_in_letter_frequency_sum_order if mask.matches(word)))
 
 class WordleAgentBase(abc.ABC):
     def __init__(self, word_set: WordSet) -> None:
@@ -124,20 +134,23 @@ class WordleAgentBase(abc.ABC):
     def act(self) -> str:
         pass
 
-    @abc.abstractclassmethod
     def learn(self, word: str, colors: Dict[int, Color]) -> None:
-        pass
+        for position, color in colors.items():
+            self.word_mask.apply_color(position, word[position], color)
+
+class WordleAgentRandom(WordleAgentBase):
+    def __init__(self, word_set: WordSet) -> None:
+        super().__init__(word_set)
+    
+    def act(self) -> str:
+        return self.word_set.get_random_word(self.word_mask)
 
 class WordleAgentLetterFrequencySum(WordleAgentBase):
     def __init__(self, word_set: WordSet) -> None:
         super().__init__(word_set)
     
     def act(self) -> str:
-        return cast(str, self.word_set.get_words_by_letter_frequency_sum(self.word_mask).head(1)["word"].item())
-    
-    def learn(self, word: str, colors: Dict[int, Color]) -> None:
-        for position, color in colors.items():
-            self.word_mask.apply_color(position, word[position], color)
+        return self.word_set.get_max_letter_frequency_sum_word(self.word_mask)
 
 class WordleSimulation(object):
     def __init__(self, agent_factory: Callable[[], WordleAgentBase]) -> None:
@@ -200,13 +213,20 @@ class WordleSimulation(object):
                 cast(IntProgress, progress_bar).value += 1
                 cast(IntProgress, progress_bar).description = f"{index}/{len(words)}"
 
+        if enable_progress_bar:
+            cast(IntProgress, progress_bar).value = len(words)
+            cast(IntProgress, progress_bar).description = f"{len(words)}/{len(words)}"
+
         hist_data = []
 
         for turn_count, win_count in hist_data_dict.items():
             hist_data.append({"turn_count": turn_count, "win_count": win_count})
         
-        df = pd.DataFrame(hist_data).sort_values("turn_count")
-        df["win_frequency"] = df["win_count"] / df["win_count"].sum()
+        if win_count > 0:
+            df = pd.DataFrame(hist_data).sort_values("turn_count")
+            df["win_frequency"] = df["win_count"] / df["win_count"].sum()
+        else:
+            df = pd.DataFrame()
 
         return win_count / len(words), df
 
